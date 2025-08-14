@@ -1,0 +1,383 @@
+model Library
+
+
+enum BookStatus { available, unavailable, onreserve}
+enum CopyStatus { onLoan, onShelf, onReserve}
+
+
+class Book
+    attributes
+        title : String
+        author : String
+        status : BookStatus init = #available
+        id: String;
+        no_copies : Integer init = 1
+        no_onshelf : Integer init = 1
+        no_onreserve : Integer init = 0
+  
+    operations
+        borrow()
+        begin
+            self.no_onshelf := self.no_onshelf - 1;
+            if (self.no_onshelf = 0) then 
+                self.status := #unavailable 
+            end
+        end    
+
+        borrowReserved()
+        begin
+            self.no_onreserve := self.no_onreserve - 1;
+            if(self.no_onshelf = 0) then
+                self.status := #unavailable;
+            else
+                self.status := #available;
+            end
+        end
+        
+        return()    
+        begin
+            self.no_onshelf := self.no_onshelf + 1;
+            self.status := #available
+        end 
+
+        reserve()
+        begin
+            self.no_onreserve := self.no_onreserve + 1;
+            if(self.no_onreserve = self.no_copies) then
+                self.status := #onreserve;
+            end
+        end
+
+        cancelReservation(c : Copy)
+        begin
+            if(c.loan <> null) then
+                self.no_onreserve := self.no_onreserve - 1;
+                self.status := #unavailable;
+            else
+                self.no_onshelf := self.no_onshelf + 1;
+                self.no_onreserve := self.no_onreserve - 1;
+                self.status := #available;
+            end;
+            c.cancelReservation();
+        end
+            
+    
+    statemachines
+        psm States
+        states                        
+            newTitle : initial
+            available       [no_onshelf > 0]
+            unavailable     [no_onshelf = 0]
+            reserved        [no_onreserve = no_copies]
+        transitions
+            newTitle -> available  { create }
+            available -> unavailable { [no_onshelf = 1] borrow() }
+            available -> available { [no_onshelf > 1] borrow() }
+            available -> available { return() }
+            available -> available {borrowReserved()}
+            available -> available {cancelReservation()}
+            unavailable -> unavailable { [no_onreserve < no_copies -1] reserve() }
+            unavailable -> reserved { [no_onreserve = no_copies - 1] reserve() }
+            unavailable -> unavailable { [no_onshelf = 0] borrowReserved()}
+            unavailable -> unavailable {cancelReservation()}
+            unavailable -> available {cancelReservation()}
+            unavailable -> available { return() }
+            reserved -> unavailable { borrowReserved()}
+            reserved -> unavailable {cancelReservation()}
+            reserved -> available {cancelReservation()}
+        end
+end
+
+class Copy
+  attributes
+    status : CopyStatus init = #onShelf
+    id : String
+  operations
+    return()
+    begin
+        if(self.status <> #onReserve) then
+            self.book.return();
+            self.status := #onShelf;
+        end
+    end
+    
+    borrow( l : Loan)
+    begin
+        self.status := #onLoan;
+        if (self.reservation = null) then
+            self.book.borrow();
+        else
+            self.book.borrowReserved();
+        end
+    end
+
+    cancelReservation()
+    begin
+        if(self.loan <> null) then
+            self.status := #onLoan;
+        else
+            self.status := #onShelf;
+        end
+    end
+
+    reserve()
+    begin
+	    self.status := #onReserve;
+	    self.book.reserve()
+    end
+
+    statemachines
+	psm States
+	states
+		newCopy : initial
+		onShelf		[status = #onShelf]
+		onLoan		[status = #onLoan]
+		onReserve	[status = #onReserve]
+	transitions
+		newCopy -> onShelf { create }
+		onShelf -> onLoan { borrow() }
+		onLoan -> onShelf { return() }
+		onLoan -> onReserve { reserve() }
+		onReserve -> onShelf { [self.loan = null] cancelReservation() }	
+		onReserve -> onLoan { [self.loan <> null] cancelReservation() }
+		onReserve -> onLoan { borrow() }
+        onReserve -> onReserve { return() }
+	end
+
+end    
+    
+class Member 
+  attributes 
+    name : String
+    address : String
+    mid : String
+    no_onloan : Integer init = 0
+    no_onreserve : Integer init = 0
+
+  operations
+    okToBorrow() : Boolean 
+    begin
+      if (self.no_onloan < 2) then
+        result := true
+      else 
+        result := false
+      end
+    end
+
+    okToReserve() : Boolean
+    begin
+      if (self.no_onreserve < 2) then
+        result := true
+      else 
+        result := false
+      end
+    end
+
+    borrow(c : Copy)
+    begin
+        declare ok : Boolean, l : Loan;
+        ok := self.okToBorrow();
+        if( ok ) then
+            l := new Loan;
+            l.cid := c.id;
+            l.mid := self.mid;
+            insert (self, l) into HasBorrowed;
+            self.no_onloan := self.no_onloan + 1;
+            l.newLoan(self,c);
+        end
+    end
+
+    borrowReserved(r:Reservation)
+    begin
+        declare ok : Boolean, l : Loan;
+        ok := self.okToBorrow();
+        if( ok ) then
+            l := r.borrow();
+            destroy r;
+            insert(self,l) into HasBorrowed;
+            self.no_onloan := self.no_onloan + 1;
+            self.no_onreserve := self.no_onreserve - 1;
+        end
+    end
+
+    reserve(b : Book)
+    begin
+      declare ok: Boolean, r : Reservation;
+      ok := self.okToReserve();
+      if( ok ) then
+          r := new Reservation;
+          r.bid := b.id;
+          r.mid := self.mid;
+          insert (self, r) into HasReserved;
+          self.no_onreserve := self.no_onreserve + 1;
+          r.newReservation(self,b)
+      end
+    end
+
+
+    return(c : Copy)
+    begin
+        self.no_onloan := self.no_onloan - 1;
+        destroy c.loan;
+        c.return();
+    end
+
+    cancelReservation(r : Reservation)
+    begin
+        r.bookReserved.cancelReservation(r.copyReserved);
+        self.no_onreserve := self.no_onreserve - 1;
+        destroy r;
+    end
+
+
+    
+end   
+
+class Loan
+  attributes 
+    mid : String
+    cid : String
+  operations
+    newLoanReserved(m : Member, c : Copy)
+    begin
+        insert(self,c) into CopyBorrowed;
+        c.borrow(self);
+    end
+
+    newLoan(m : Member, c : Copy)
+    begin
+        insert(self,c) into CopyBorrowed;
+        c.borrow(self);
+    end
+        
+end
+
+class Reservation
+  attributes
+    mid : String
+    bid : String
+  operations
+    borrow() : Loan
+    begin
+        declare l : Loan;
+        l := new Loan;
+        l.cid := self.copyReserved.id;
+        l.mid := self.mid;
+        l.newLoanReserved(self.reserver,self.copyReserved);
+        result := l;
+    end
+    newReservation(m : Member, b: Book)
+    begin
+        declare c: Copy;
+        insert(self,b) into BookReserved;
+        for x in b.copies do
+            if(x.status = #onLoan) then
+                c := x
+            end
+        end;
+        c.reserve();
+        insert(self,c) into CopyReserved;
+    end
+
+    statemachines
+    psm States
+    states                        
+        newReservation : initial
+        requested    
+        ready 
+        borrowed
+    transitions
+        newReservation ->  requested  { create }
+        requested -> ready { newReservation() }
+        ready -> borrowed {borrow()}
+    end   
+end  
+
+
+association HasBorrowed between
+    Member[0..1] role borrower
+    Loan[0..*]
+end
+
+association CopyBorrowed between
+    Loan[0..1]
+    Copy[1] role borrowed
+end
+
+association CopyOf between
+    Copy[1..*] role copies
+    Book[1] role book
+end
+
+association HasReserved between
+    Member[0..1] role reserver
+    Reservation[0..*]
+end
+
+association CopyReserved between
+    Reservation[0..1]
+    Copy[0..1] role copyReserved
+end
+
+association BookReserved between
+    Reservation[0..*] 
+    Book[1] role bookReserved
+end
+     
+
+  
+constraints
+
+
+context Book::return()
+    post bookReturnIncrease: no_onshelf = no_onshelf@pre + 1
+
+context Member::borrow(c:Copy) 
+    pre memberBorrowLimit: self.no_onloan < 2
+    pre memberStatusCheck: c.status = #onShelf
+    pre memberBorrowExclusion: self.loan.borrowed->excludes(c)
+    post memberBorrowInclusion: self.loan.borrowed->includes(c)
+
+context Loan::newLoanReserved(m : Member, c : Copy)
+    pre loanNewLoanResLimit: m.no_onloan < 2
+    pre loanNewLoanResExclusion: self.borrowed->excludes(c)
+    post loanNewLoanResInclusion: self.borrowed->includes(c)
+
+context Member:: return(c:Copy)
+    pre memberReturnExclusion: self.loan.borrowed->includes(c)
+    post memberReturnInclusion: self.loan.borrowed->excludes(c)
+
+context Member:: reserve(b : Book)
+    pre memberReserveMinimum: b.no_onshelf = 0
+    post memberReserveInclusion: self.reservation.bookReserved->includes(b)
+
+context Member:: borrowReserved(r:Reservation)
+    pre memberBorrowResEmpty: r.copyReserved.loan -> isEmpty()
+    pre memberBorrowResStatus: r.copyReserved.status = #onReserve
+    pre memberBorrowResInclusion: self.reservation -> includes(r)
+    post memberBorrowResExclusion: self.reservation -> excludes(r)
+
+context Member:: cancelReservation(r : Reservation)
+    pre memberCancelResInclusion: self.reservation -> includes(r)
+    post memberCancelResExclusion: self.reservation -> excludes(r)
+
+
+
+context Copy  
+    inv CopyStatusInv: self.status = #onShelf or self.status = #onLoan or self.status = #onReserve
+
+context Member
+    inv loanMin: self.no_onloan >= 0
+    inv reserveMin: self.no_onreserve >= 0
+
+context Book
+    inv numBookCopies: self.no_copies >= 0
+    inv numBookShelf: self.no_onshelf >= 0
+    inv numBookReserve: self.no_onreserve >= 0
+    inv BookStatusInv: self.status = #available or self.status = #unavailable or self.status = #onreserve
+
+
+
+
+
+    
